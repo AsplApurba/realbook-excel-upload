@@ -287,6 +287,28 @@ let lastJob = null;
 
 const $ = (id) => document.getElementById(id);
 
+async function readApiResponse(response) {
+  const raw = await response.text();
+  let data = null;
+  try {
+    data = raw ? JSON.parse(raw) : null;
+  } catch (_err) {
+    data = null;
+  }
+  return { ok: response.ok, status: response.status, data, raw };
+}
+
+function getApiErrorMessage(result, fallback) {
+  if (result && result.data) {
+    if (typeof result.data.error === "string" && result.data.error.trim()) return result.data.error.trim();
+    if (typeof result.data.message === "string" && result.data.message.trim()) return result.data.message.trim();
+  }
+  if (result && typeof result.raw === "string" && result.raw.trim()) {
+    return result.raw.trim().slice(0, 500);
+  }
+  return fallback || "Request failed";
+}
+
 const SUMMARY_FIELDS = [
   ["job", "Job"], ["title", "Title"], ["box_id", "Box ID"], ["menu_name", "Menu name"],
   ["gstin", "GSTIN"], ["domain_alias", "Domain"],
@@ -479,11 +501,12 @@ $("fetch_btn").onclick = async () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ job_number: job }),
     });
-    const data = await r.json();
-    if (!r.ok) throw new Error(data.error || "fetch failed");
-    lastJob = data;
-    renderSummary(data);
-    renderMenuList(data.menu_list_all || [], data.menu_list || []);
+    const result = await readApiResponse(r);
+    if (!result.ok) throw new Error(getApiErrorMessage(result, "fetch failed"));
+    if (!result.data) throw new Error("Server returned non-JSON success response.");
+    lastJob = result.data;
+    renderSummary(result.data);
+    renderMenuList(result.data.menu_list_all || [], result.data.menu_list || []);
     prefillForms();
     $("fetch_status").textContent = "Loaded."; $("fetch_status").className = "status ok";
   } catch (e) {
@@ -508,10 +531,12 @@ async function submitMenuForm(formId, endpoint, statusEl, outEl, label) {
   showLoader(label, "Uploading files and posting to the manualmapping API.");
   try {
     const r = await fetch(endpoint, { method: "POST", body: fd });
-    const data = await r.json();
-    $(outEl).textContent = JSON.stringify(data, null, 2);
-    $(statusEl).textContent = r.ok ? "Done." : "Error";
-    $(statusEl).className = r.ok ? "status ok" : "status err";
+    const result = await readApiResponse(r);
+    $(outEl).textContent = result.data
+      ? JSON.stringify(result.data, null, 2)
+      : (result.raw || "");
+    $(statusEl).textContent = result.ok ? "Done." : ("Error: " + getApiErrorMessage(result, "request failed"));
+    $(statusEl).className = result.ok ? "status ok" : "status err";
   } catch (e) {
     $(statusEl).textContent = "Error: " + e.message; $(statusEl).className = "status err";
   } finally {
@@ -531,7 +556,11 @@ async function deleteIds(ids) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ids }),
     });
-    $("delete_output").textContent = JSON.stringify(await r.json(), null, 2);
+    const result = await readApiResponse(r);
+    $("delete_output").textContent = result.data
+      ? JSON.stringify(result.data, null, 2)
+      : (result.raw || "");
+    if (!result.ok) $("delete_output").textContent = "Error: " + getApiErrorMessage(result, "delete failed");
   } catch (e) {
     $("delete_output").textContent = "Error: " + e.message;
   } finally {
@@ -591,8 +620,9 @@ async function searchAndClone(kind, pathFieldName) {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ term, kind }),
     });
-    data = await r.json();
-    if (!r.ok) { alert("Search error: " + (data.error || r.status)); return; }
+    const result = await readApiResponse(r);
+    if (!result.ok) { alert("Search error: " + getApiErrorMessage(result, String(result.status))); return; }
+    data = result.data || { matches: [] };
   } finally { hideLoader(); }
   if (!data.matches.length) { alert(`No files matching '${data.pattern}'`); return; }
 
@@ -613,8 +643,9 @@ async function searchAndClone(kind, pathFieldName) {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ src: picked.path, new_name, domain_alias: domain }),
     });
-    cd = await cr.json();
-    if (!cr.ok) { alert("Clone error: " + (cd.error || cr.status)); return; }
+    const result = await readApiResponse(cr);
+    cd = result.data || {};
+    if (!result.ok) { alert("Clone error: " + getApiErrorMessage(result, String(result.status))); return; }
   } finally { hideLoader(); }
 
   $("add_form").elements[pathFieldName].value = cd.clone_path;
@@ -643,22 +674,27 @@ $("create_py_btn").onclick = async () => {
         overwrite,
       }),
     });
-    return [r, await r.json()];
+    const result = await readApiResponse(r);
+    return [r, result];
   }
   showLoader("Creating py file…", `Copying source into the ${domain} domain folder.`);
-  let r, data;
+  let r, result;
   try {
-    [r, data] = await send(false);
+    [r, result] = await send(false);
   } finally { hideLoader(); }
+  const data = result.data || {};
   if (r.status === 409 && data.needs_overwrite) {
     if (!confirm(`File exists:\n${data.dest}\n\nOverwrite?`)) return;
     showLoader("Overwriting py file…", "");
-    try { [r, data] = await send(true); } finally { hideLoader(); }
+    try {
+      [r, result] = await send(true);
+    } finally { hideLoader(); }
   }
-  if (!r.ok) { alert("Create error: " + (data.error || r.status)); return; }
-  $("add_form").elements["py_file_path"].value = data.dest;
-  $("edit_form").elements["py_file_path"].value = data.dest;
-  alert(`Created → ${data.dest}`);
+  const finalData = (result && result.data) || {};
+  if (!r.ok) { alert("Create error: " + getApiErrorMessage(result, String(r.status))); return; }
+  $("add_form").elements["py_file_path"].value = finalData.dest;
+  $("edit_form").elements["py_file_path"].value = finalData.dest;
+  alert(`Created → ${finalData.dest}`);
 };
 </script>
 
