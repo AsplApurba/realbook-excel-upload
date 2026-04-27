@@ -4,3 +4,8 @@ services:
     runtime: docker
     plan: free
     autoDeploy: true
+    envVars:
+      - key: REALBOOKS_USERNAME
+        sync: false
+      - key: REALBOOKS_PASSWORD
+        sync: false
