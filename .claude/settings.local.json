@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip3 install *)",
+      "Bash(python3 -c \"import requests, bs4, selenium, pandas, lxml; print\\('all deps ok'\\)\")"
+    ]
+  }
+}
