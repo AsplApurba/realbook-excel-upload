@@ -26,9 +26,9 @@ ADDMENU_URL = "https://custom-pyexcel.realbooks.in/manualmapping/AddMenu"
 EDITMENU_URL = "https://custom-pyexcel.realbooks.in/manualmapping/EditMenu"
 DELETEMENU_URL = "https://custom-pyexcel.realbooks.in/manualmapping/DeleteMenu"
 
-# Credentials: prefer env vars, fall back to inline for quick testing.
-USERNAME = os.environ.get("REALBOOKS_USERNAME", "sahaapurba1994@gmail.com")
-PASSWORD = os.environ.get("REALBOOKS_PASSWORD", "Ams@1234")
+# Credentials must come from the environment, especially for hosted deploys.
+USERNAME = os.environ.get("REALBOOKS_USERNAME", "").strip()
+PASSWORD = os.environ.get("REALBOOKS_PASSWORD", "").strip()
 
 RLB_BOX_PREFIX = "RLBMBOX1"
 RLB_PASSWORD_PREFIX = "RLB1234"
@@ -62,6 +62,8 @@ def build_driver(headless: bool):
 
 
 def login(driver, wait):
+    if not USERNAME or not PASSWORD:
+        sys.exit("Missing REALBOOKS_USERNAME or REALBOOKS_PASSWORD environment variable.")
     driver.get(LOGIN_URL)
     wait.until(EC.visibility_of_element_located((By.ID, "userName"))).send_keys(USERNAME)
     driver.find_element(By.ID, "password").send_keys(PASSWORD)
