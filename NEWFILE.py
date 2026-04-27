@@ -73,13 +73,32 @@ def login(driver, wait):
         wait.until(lambda d: "/login" not in d.current_url)
     except TimeoutException:
         msg = ""
+        title = ""
+        body_excerpt = ""
         try:
             msg = driver.find_element(
                 By.CSS_SELECTOR, ".error, .alert, .invalid-feedback, [role='alert']"
             ).text.strip()
         except NoSuchElementException:
             pass
-        sys.exit(f"Login failed. {msg}".strip())
+        try:
+            title = (driver.title or "").strip()
+        except Exception:
+            pass
+        try:
+            body_excerpt = (driver.find_element(By.TAG_NAME, "body").text or "").strip()
+            body_excerpt = re.sub(r"\s+", " ", body_excerpt)[:500]
+        except Exception:
+            pass
+        details = "; ".join(
+            part for part in [
+                f"current_url={driver.current_url!r}",
+                f"title={title!r}" if title else "",
+                f"page_text={body_excerpt!r}" if body_excerpt else "",
+                msg,
+            ] if part
+        )
+        sys.exit(f"Login failed. {details}".strip())
 
 
 def fetch_job(driver, wait, job_number: str) -> dict:
