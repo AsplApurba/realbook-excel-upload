@@ -1,0 +1,666 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Realbook Excel Upload</title>
+<style>
+  body { font: 14px system-ui, sans-serif; margin: 24px; background: #f8fafc; color: #0f172a; }
+  h1 { font-size: 20px; margin: 0 0 16px; }
+  h2 { font-size: 16px; margin: 0 0 12px; color: #0284c7; }
+  .panel { background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+  label { display: block; margin: 8px 0 4px; font-weight: 600; font-size: 13px; }
+  input[type=text], input[type=file] { width: 100%; padding: 6px 8px; border: 1px solid #cbd5e1; border-radius: 4px; box-sizing: border-box; font: inherit; }
+  button { background: #0284c7; color: #fff; border: 0; padding: 8px 16px; border-radius: 4px; cursor: pointer; font: inherit; }
+  button.secondary { background: #64748b; }
+  button.success { background: #16a34a; }
+  button.violet { background: #7c3aed; }
+  button.violet-outline { background: #fff; color: #7c3aed; border: 1px solid #7c3aed; }
+  button.danger { background: #dc2626; }
+  button:disabled { background: #94a3b8; cursor: not-allowed; }
+  pre { background: #f1f5f9; padding: 12px; border-radius: 4px; overflow: auto; max-height: 320px; margin: 0; font-size: 12px; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; }
+  .row > div { flex: 1; min-width: 180px; }
+  .summary-grid { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; font-size: 13px; }
+  .summary-grid dt { color: #64748b; font-weight: 600; }
+  .summary-grid dd { margin: 0; word-break: break-all; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th, td { padding: 6px 8px; border-bottom: 1px solid #e2e8f0; text-align: left; vertical-align: top; }
+  th { background: #f1f5f9; font-weight: 600; }
+  tr:hover td { background: #f8fafc; }
+  .source-toggle { display: inline-flex; gap: 0; margin-left: 8px; }
+  .source-toggle label { display: inline; margin: 0; font-weight: 400; }
+  .source-toggle input { margin-right: 4px; }
+  .status { color: #64748b; font-size: 13px; margin-left: 8px; }
+  .ok { color: #16a34a; }
+  .err { color: #dc2626; }
+  .btn-row { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
+
+  /* Loader */
+  .loader-bg { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.55); display: none; align-items: center; justify-content: center; z-index: 200; }
+  .loader-card { background: #fff; padding: 24px 32px; border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,0.2); display: flex; flex-direction: column; align-items: center; gap: 12px; min-width: 360px; }
+  .loader-text { color: #0f172a; font-weight: 600; }
+  .loader-sub { color: #64748b; font-size: 12px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Video loader */
+  .loader-video { width: 320px; max-width: 80vw; height: auto; border-radius: 6px; background: #000; }
+
+  /* Cheetah scene */
+  .cheetah-scene { position: relative; width: 320px; height: 130px; overflow: hidden; background: linear-gradient(#fff7ed, #fff); border-radius: 6px; }
+  .cheetah-ground { position: absolute; left: 0; right: 0; bottom: 18px; height: 2px; background: repeating-linear-gradient(90deg, #cbd5e1 0 12px, transparent 12px 24px); animation: ground-scroll 0.4s linear infinite; }
+  .cheetah-dust { position: absolute; bottom: 18px; height: 8px; width: 8px; border-radius: 50%; background: rgba(148,163,184,0.6); animation: dust-puff 0.5s linear infinite; }
+  .cheetah-dust.d2 { animation-delay: 0.15s; }
+  .cheetah-dust.d3 { animation-delay: 0.3s; }
+  @keyframes ground-scroll { to { transform: translateX(-24px); } }
+  @keyframes dust-puff {
+    0% { transform: translate(80px, 0) scale(0.6); opacity: 0.7; }
+    100% { transform: translate(20px, -10px) scale(1.4); opacity: 0; }
+  }
+
+  .cheetah { position: absolute; left: 110px; bottom: 22px; width: 120px; height: 70px; animation: bob 0.28s ease-in-out infinite alternate; }
+  @keyframes bob { from { transform: translateY(0); } to { transform: translateY(-4px); } }
+
+  .cheetah .body { position: absolute; left: 16px; bottom: 18px; width: 80px; height: 26px; background: #f59e0b; border-radius: 60% 40% 50% 50% / 60% 60% 40% 40%; }
+  .cheetah .head { position: absolute; right: 4px; bottom: 28px; width: 30px; height: 24px; background: #f59e0b; border-radius: 50% 60% 40% 50%; }
+  .cheetah .ear { position: absolute; right: 9px; bottom: 48px; width: 10px; height: 10px; background: #f59e0b; border-radius: 50% 50% 0 50%; transform: rotate(-20deg); }
+  .cheetah .eye { position: absolute; right: 12px; bottom: 40px; width: 4px; height: 4px; background: #0f172a; border-radius: 50%; }
+  .cheetah .tail { position: absolute; left: 0; bottom: 30px; width: 30px; height: 8px; background: #f59e0b; border-radius: 50%; transform-origin: right center; animation: tail 0.28s ease-in-out infinite alternate; }
+  @keyframes tail { from { transform: rotate(15deg); } to { transform: rotate(-10deg); } }
+
+  /* Spots */
+  .cheetah .spot { position: absolute; background: #1f2937; border-radius: 50%; }
+  .cheetah .s1 { left: 28px; bottom: 32px; width: 5px; height: 5px; }
+  .cheetah .s2 { left: 44px; bottom: 36px; width: 4px; height: 4px; }
+  .cheetah .s3 { left: 60px; bottom: 30px; width: 5px; height: 5px; }
+  .cheetah .s4 { left: 76px; bottom: 33px; width: 4px; height: 4px; }
+  .cheetah .s5 { left: 36px; bottom: 24px; width: 4px; height: 4px; }
+  .cheetah .s6 { left: 56px; bottom: 22px; width: 5px; height: 5px; }
+
+  /* Legs — front pair and back pair, opposite phase */
+  .cheetah .leg { position: absolute; bottom: 0; width: 6px; height: 22px; background: #f59e0b; border-radius: 4px; transform-origin: top center; }
+  .cheetah .leg::after { content: ""; position: absolute; bottom: -2px; left: -1px; width: 8px; height: 4px; background: #1f2937; border-radius: 2px; }
+  .cheetah .fl { left: 78px; animation: run-front 0.28s linear infinite; }
+  .cheetah .fr { left: 88px; animation: run-front 0.28s linear infinite; animation-delay: -0.14s; }
+  .cheetah .bl { left: 22px; animation: run-back 0.28s linear infinite; }
+  .cheetah .br { left: 32px; animation: run-back 0.28s linear infinite; animation-delay: -0.14s; }
+  @keyframes run-front {
+    0% { transform: rotate(35deg); height: 22px; }
+    25% { transform: rotate(0deg); height: 22px; }
+    50% { transform: rotate(-30deg); height: 18px; }
+    75% { transform: rotate(0deg); height: 22px; }
+    100% { transform: rotate(35deg); height: 22px; }
+  }
+  @keyframes run-back {
+    0% { transform: rotate(-30deg); height: 18px; }
+    25% { transform: rotate(0deg); height: 22px; }
+    50% { transform: rotate(35deg); height: 22px; }
+    75% { transform: rotate(0deg); height: 22px; }
+    100% { transform: rotate(-30deg); height: 18px; }
+  }
+
+  .cheetah-pct { font-size: 18px; font-weight: 700; color: #0284c7; }
+
+  /* Inline button spinner */
+  .btn-spin { display: inline-block; width: 12px; height: 12px; border: 2px solid rgba(255,255,255,0.4); border-top-color: #fff; border-radius: 50%; animation: spin 0.8s linear infinite; vertical-align: -2px; margin-right: 6px; }
+
+  /* Modal */
+  .modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: none; align-items: center; justify-content: center; z-index: 100; }
+  .modal { background: #fff; border-radius: 8px; padding: 16px; width: min(900px, 95%); max-height: 80vh; display: flex; flex-direction: column; }
+  .modal-list { overflow-y: auto; border: 1px solid #cbd5e1; border-radius: 4px; margin: 8px 0; font: 12px monospace; }
+  .modal-list .item { padding: 6px 8px; border-bottom: 1px solid #e2e8f0; cursor: pointer; }
+  .modal-list .item:hover { background: #f1f5f9; }
+  .modal-list .item.selected { background: #dbeafe; }
+</style>
+</head>
+<body>
+
+<h1>Realbook Excel Upload</h1>
+
+<!-- ============ Job lookup ============ -->
+<div class="panel">
+  <div class="row">
+    <div style="flex:3"><label>Job number</label><input type="text" id="job_number" placeholder="160911 or job-160911"></div>
+    <div style="flex:0; align-self: flex-end"><button id="fetch_btn">Fetch job</button></div>
+  </div>
+  <div id="fetch_status" class="status"></div>
+</div>
+
+<!-- ============ Summary ============ -->
+<div class="panel" id="summary_panel" style="display:none">
+  <h2>Summary</h2>
+  <dl class="summary-grid" id="summary_grid"></dl>
+  <p style="margin-top:12px">
+    Source for prefill:
+    <span class="source-toggle">
+      <label><input type="radio" name="source" value="to" checked> Deploy To</label>
+      <label><input type="radio" name="source" value="from"> Deploy From</label>
+    </span>
+  </p>
+</div>
+
+<!-- ============ Menu list ============ -->
+<div class="panel" id="menu_list_panel" style="display:none">
+  <h2>Menu list <span class="status" id="menu_list_count"></span></h2>
+  <div class="row" style="align-items:flex-end; margin-bottom:8px">
+    <div style="flex:3"><label>Filter (py file name)</label><input type="text" id="menu_filter" placeholder="match by py file path / name"></div>
+    <div style="flex:0">
+      <label style="display:inline-flex; align-items:center; gap:6px; font-weight:400">
+        <input type="checkbox" id="only_matched"> Only matched menu_name
+      </label>
+    </div>
+    <div style="flex:0"><button class="secondary" type="button" id="menu_filter_clear">Clear</button></div>
+  </div>
+  <div style="overflow-x:auto">
+    <table id="menu_list_table">
+      <thead>
+        <tr>
+          <th>Side</th><th>ID</th><th>Seg ID</th><th>Menu name</th><th>Py file</th><th>Template</th>
+          <th>GSTIN</th><th>Module</th><th>Ext</th>
+          <th>Ledger</th><th>Item</th><th>CC</th><th>Tagg</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ============ Add menu ============ -->
+<div class="panel">
+  <h2>Add menu</h2>
+  <form id="add_form">
+    <div class="row">
+      <div><label>cid</label><input name="cid" type="text"></div>
+      <div><label>box_id</label><input name="box_id" type="text"></div>
+      <div><label>menu_name</label><input name="menu_name" type="text"></div>
+    </div>
+    <div class="row">
+      <div><label>gstin</label><input name="gstin" type="text"></div>
+      <div><label>domain_alias</label><input name="domain_alias" type="text"></div>
+      <div><label>segids (comma-separated)</label><input name="segids_csv" type="text"></div>
+    </div>
+    <div class="row">
+      <div>
+        <label>rlb_module_type</label>
+        <select name="rlb_module_type" style="width:100%; padding:6px 8px; border:1px solid #cbd5e1; border-radius:4px; font:inherit; background:#fff">
+          <option value="acc_jrnal">acc_jrnal</option>
+          <option value="inventory" selected>inventory</option>
+          <option value="ibt_acc">ibt_acc</option>
+          <option value="inv_price_diff">inv_price_diff</option>
+        </select>
+      </div>
+      <div><label>file_ext_type</label><input name="file_ext_type" type="text" value="xlsx,xls"></div>
+      <div><label>uid_create</label><input name="uid_create" type="text" value="1111"></div>
+      <div><label>uid_update</label><input name="uid_update" type="text" value="1111"></div>
+    </div>
+    <div class="row">
+      <div><label>is_ledger_creation</label><input name="is_ledger_creation" type="text" value="1"></div>
+      <div><label>is_item_creation</label><input name="is_item_creation" type="text" value="1"></div>
+      <div><label>is_cc_creation</label><input name="is_cc_creation" type="text" value="0"></div>
+      <div><label>is_tagg_creation</label><input name="is_tagg_creation" type="text" value="0"></div>
+    </div>
+    <div class="row">
+      <div><label>py_file (server path)</label><input name="py_file_path" type="text" placeholder="/home/.../file.py"></div>
+      <div><label>template_file (server path)</label><input name="template_file_path" type="text" placeholder="/home/.../file.xlsx"></div>
+    </div>
+    <div class="row">
+      <div><label>py_file (browser upload — overrides server path)</label><input name="py_file" type="file"></div>
+      <div><label>template_file (browser upload — overrides server path)</label><input name="template_file" type="file"></div>
+    </div>
+    <div class="btn-row">
+      <button type="button" class="violet" id="create_py_btn">Create py file in domain folder</button>
+      <button type="button" class="violet-outline" id="clone_py_btn">Search &amp; clone py file</button>
+      <button type="button" class="violet-outline" id="clone_tpl_btn">Search &amp; clone template file</button>
+      <button type="submit" class="success">Upload to AddMenu</button>
+      <span id="add_status" class="status"></span>
+    </div>
+    <pre id="add_output"></pre>
+  </form>
+</div>
+
+<!-- ============ Edit menu ============ -->
+<div class="panel">
+  <h2>Edit menu</h2>
+  <form id="edit_form">
+    <div class="row">
+      <div><label>cid</label><input name="cid" type="text"></div>
+      <div><label>box_id</label><input name="box_id" type="text"></div>
+      <div><label>gstin</label><input name="gstin" type="text"></div>
+      <div><label>uid_update</label><input name="uid_update" type="text" value="1111"></div>
+    </div>
+    <div class="row">
+      <div><label>is_ledger_creation</label><input name="is_ledger_creation" type="text" value="0"></div>
+      <div><label>is_item_creation</label><input name="is_item_creation" type="text" value="1"></div>
+      <div><label>is_cc_creation</label><input name="is_cc_creation" type="text" value="0"></div>
+      <div><label>is_tagg_creation</label><input name="is_tagg_creation" type="text" value="0"></div>
+    </div>
+    <div class="row">
+      <div><label>py_file (server path)</label><input name="py_file_path" type="text"></div>
+      <div><label>template_file (server path)</label><input name="template_file_path" type="text"></div>
+    </div>
+    <div class="row">
+      <div><label>py_file (browser upload)</label><input name="py_file" type="file"></div>
+      <div><label>template_file (browser upload)</label><input name="template_file" type="file"></div>
+    </div>
+    <p><button type="submit">Edit menu</button> <span id="edit_status" class="status"></span></p>
+    <pre id="edit_output"></pre>
+  </form>
+</div>
+
+<!-- ============ Delete menu ============ -->
+<div class="panel">
+  <h2>Delete menu</h2>
+  <p>Pick rows from the menu list above (Delete buttons in the last column), or paste IDs:</p>
+  <div class="row">
+    <div style="flex:3"><input type="text" id="delete_ids" placeholder="comma-separated menu IDs"></div>
+    <div style="flex:0"><button class="danger" id="delete_btn">Delete</button></div>
+  </div>
+  <pre id="delete_output" style="margin-top:8px"></pre>
+</div>
+
+<!-- ============ Loader overlay ============ -->
+<div class="loader-bg" id="loader">
+  <div class="loader-card">
+    <video class="loader-video" autoplay loop muted playsinline>
+      <source src="/media/head-round.mp4" type="video/mp4">
+    </video>
+    <div class="cheetah-pct" id="loader_pct">0%</div>
+    <div class="loader-text" id="loader_text">Loading…</div>
+    <div class="loader-sub" id="loader_sub">This may take 10–30 seconds on first run (Chrome login).</div>
+  </div>
+</div>
+
+<!-- ============ Search results modal ============ -->
+<div class="modal-bg" id="search_modal">
+  <div class="modal">
+    <h2 id="search_title">Search results</h2>
+    <div class="modal-list" id="search_results"></div>
+    <div class="btn-row" style="justify-content: flex-end">
+      <button class="secondary" type="button" id="search_cancel">Cancel</button>
+      <button type="button" id="search_select">Select</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let lastJob = null;
+
+const $ = (id) => document.getElementById(id);
+
+const SUMMARY_FIELDS = [
+  ["job", "Job"], ["title", "Title"], ["box_id", "Box ID"], ["menu_name", "Menu name"],
+  ["gstin", "GSTIN"], ["domain_alias", "Domain"],
+  ["deploy_from_cid", "Deploy From CID"], ["deploy_from_segids", "Deploy From SegIDs"],
+  ["deploy_to_cid", "Deploy To CID"], ["deploy_to_segids", "Deploy To SegIDs"],
+  ["url", "URL"],
+];
+
+function renderSummary(data) {
+  const grid = $("summary_grid");
+  grid.innerHTML = "";
+  for (const [key, label] of SUMMARY_FIELDS) {
+    let val = data[key];
+    if (Array.isArray(val)) val = val.join(", ");
+    if (val === undefined || val === null || val === "") val = "—";
+    const dt = document.createElement("dt"); dt.textContent = label;
+    const dd = document.createElement("dd"); dd.textContent = val;
+    grid.append(dt, dd);
+  }
+  $("summary_panel").style.display = "block";
+}
+
+let _menuRows = [];          // {id, item, matched}
+let _matchedCount = 0;
+
+function renderMenuList(items, matchedItems) {
+  const matchedIds = new Set((matchedItems || []).map(m => String(m.id || "")).filter(Boolean));
+  const all = items && items.length ? items : (matchedItems || []);
+  _menuRows = all.map(it => {
+    const id = String(it.id || it.menu_id || it._id || "");
+    return { id, item: it, matched: id ? matchedIds.has(id) : false };
+  });
+  _matchedCount = _menuRows.filter(r => r.matched).length;
+  $("menu_list_panel").style.display = "block";
+  // Default the filter to the matched menu's py-file basename, scoped strictly
+  // to py_file_path. User can edit/clear to broaden.
+  const firstMatched = (matchedItems || []).find(m => (m.py_file_path || "").trim());
+  $("menu_filter").value = firstMatched
+    ? String(firstMatched.py_file_path).split("/").pop()
+    : "";
+  applyMenuFilter();
+}
+
+function applyMenuFilter() {
+  const tbody = $("menu_list_table").querySelector("tbody");
+  tbody.innerHTML = "";
+  const q = ($("menu_filter").value || "").trim().toLowerCase();
+  const onlyMatched = $("only_matched").checked;
+  let shown = 0;
+  for (const r of _menuRows) {
+    if (onlyMatched && !r.matched) continue;
+    const it = r.item;
+    const haystack = String(it.py_file_path || "").toLowerCase();
+    if (q && !haystack.includes(q)) continue;
+    shown++;
+    const tr = document.createElement("tr");
+    if (r.matched) tr.style.background = "#fef9c3";
+    const cells = [
+      it.side ? it.side.toUpperCase() : "",
+      r.id, it.segid || "", it.menu_name || "", it.py_file_path || "", it.template_file_path || "",
+      it.gstin || "", it.rlb_module_type || "", it.file_ext_type || "",
+      it.is_ledger_creation || "", it.is_item_creation || "",
+      it.is_cc_creation || "", it.is_tagg_creation || "",
+    ];
+    for (const c of cells) {
+      const td = document.createElement("td"); td.textContent = c; tr.append(td);
+    }
+    const tdAct = document.createElement("td");
+    if (r.id) {
+      const useBtn = document.createElement("button");
+      useBtn.textContent = "Use"; useBtn.style.padding = "2px 8px"; useBtn.style.fontSize = "11px";
+      useBtn.onclick = (ev) => { ev.preventDefault(); useMenuRow(it); };
+      tdAct.append(useBtn);
+      const delBtn = document.createElement("button");
+      delBtn.className = "danger"; delBtn.textContent = "Delete";
+      delBtn.style.padding = "2px 8px"; delBtn.style.fontSize = "11px"; delBtn.style.marginLeft = "4px";
+      delBtn.onclick = (ev) => { ev.preventDefault(); deleteOne(r.id); };
+      tdAct.append(delBtn);
+    }
+    tr.append(tdAct);
+    tbody.append(tr);
+  }
+  const total = _menuRows.length;
+  $("menu_list_count").textContent = total
+    ? `(showing ${shown} of ${total} on server, ${_matchedCount} matched menu_name)`
+    : "(none)";
+}
+
+$("menu_filter").addEventListener("input", applyMenuFilter);
+$("only_matched").addEventListener("change", applyMenuFilter);
+$("menu_filter_clear").onclick = () => {
+  $("menu_filter").value = ""; $("only_matched").checked = false; applyMenuFilter();
+};
+
+function useMenuRow(it) {
+  // Copy this row's paths into the Edit form (and Add form's path inputs).
+  for (const f of ["add_form", "edit_form"]) {
+    const form = $(f);
+    if (form.elements["py_file_path"]) form.elements["py_file_path"].value = it.py_file_path || "";
+    if (form.elements["template_file_path"]) form.elements["template_file_path"].value = it.template_file_path || "";
+  }
+}
+
+function prefillForms() {
+  if (!lastJob) return;
+  const src = document.querySelector('input[name="source"]:checked').value;
+  const cid = lastJob[`deploy_${src}_cid`] || lastJob.deploy_to_cid || lastJob.deploy_from_cid || "";
+  const segids = lastJob[`deploy_${src}_segids`] || lastJob.deploy_to_segids || lastJob.deploy_from_segids || [];
+  const box = lastJob[`deploy_${src}_box`] || lastJob.box_id || "";
+  const menu = lastJob[`deploy_${src}_menu`] || lastJob.menu_name || "";
+  const gstin = lastJob[`deploy_${src}_gstin`] || lastJob.gstin || "";
+  const domain = lastJob[`deploy_${src}_domain`] || lastJob.domain_alias || "";
+
+  const setVal = (form, name, val) => {
+    const el = $(form).querySelector(`[name="${name}"]`);
+    if (el && !el.value) el.value = val;
+    else if (el && el.dataset.autofill !== "false") el.value = val;
+  };
+  for (const f of ["add_form", "edit_form"]) {
+    setVal(f, "cid", cid);
+    setVal(f, "box_id", box);
+    setVal(f, "gstin", gstin);
+  }
+  setVal("add_form", "menu_name", menu);
+  setVal("add_form", "domain_alias", domain);
+  setVal("add_form", "segids_csv", Array.isArray(segids) ? segids.join(", ") : segids);
+
+  // rlb_module_type: prefer the value the server already has on a matched menu.
+  // If no match (new menu), reset to the default 'inventory' so a previous job's
+  // value doesn't leak in — user can still pick another choice from the dropdown.
+  const fromMenu = (lastJob.menu_list || []).find(m => (m.rlb_module_type || "").trim());
+  const moduleType = fromMenu ? String(fromMenu.rlb_module_type).trim() : "inventory";
+  const sel = $("add_form").elements["rlb_module_type"];
+  let opt = Array.from(sel.options).find(o => o.value === moduleType);
+  if (!opt) {
+    opt = document.createElement("option");
+    opt.value = moduleType; opt.textContent = moduleType + " (from menu)";
+    sel.append(opt);
+  }
+  sel.value = moduleType;
+}
+
+document.querySelectorAll('input[name="source"]').forEach(r => r.addEventListener("change", prefillForms));
+
+// Loader with simulated percentage — eases towards 95% over time, snaps to
+// 100% when the underlying request finishes. The cheetah animation is
+// purely cosmetic (CSS only).
+let _loaderTimer = null;
+let _loaderStart = 0;
+
+function _loaderSetPct(pct) {
+  pct = Math.max(0, Math.min(100, pct));
+  $("loader_pct").textContent = Math.round(pct) + "%";
+}
+
+function showLoader(text, sub, expectedSeconds) {
+  if (text) $("loader_text").textContent = text;
+  if (sub !== undefined) $("loader_sub").textContent = sub;
+  $("loader").style.display = "flex";
+  _loaderSetPct(0);
+  _loaderStart = Date.now();
+  if (_loaderTimer) clearInterval(_loaderTimer);
+  // Curve: pct = 95 * (1 - exp(-t / tau)). Halfway-to-95 at ~tau seconds.
+  const tau = (expectedSeconds && expectedSeconds > 0) ? expectedSeconds : 10;
+  _loaderTimer = setInterval(() => {
+    const t = (Date.now() - _loaderStart) / 1000;
+    _loaderSetPct(95 * (1 - Math.exp(-t / tau)));
+  }, 120);
+}
+
+function hideLoader() {
+  if (_loaderTimer) { clearInterval(_loaderTimer); _loaderTimer = null; }
+  _loaderSetPct(100);
+  // Brief delay so the user sees the snap to 100% before the overlay vanishes.
+  setTimeout(() => { $("loader").style.display = "none"; }, 200);
+}
+
+$("fetch_btn").onclick = async () => {
+  const btn = $("fetch_btn");
+  const job = $("job_number").value.trim();
+  if (!job) return;
+  btn.disabled = true;
+  const origHTML = btn.innerHTML;
+  btn.innerHTML = '<span class="btn-spin"></span>Fetching…';
+  showLoader(`Fetching JOB-${job.replace(/^job-/i, "")}…`, "Logging in to RealBooks and loading the job page.", 15);
+  $("fetch_status").textContent = ""; $("fetch_status").className = "status";
+  try {
+    const r = await fetch("/api/job", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ job_number: job }),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || "fetch failed");
+    lastJob = data;
+    renderSummary(data);
+    renderMenuList(data.menu_list_all || [], data.menu_list || []);
+    prefillForms();
+    $("fetch_status").textContent = "Loaded."; $("fetch_status").className = "status ok";
+  } catch (e) {
+    $("fetch_status").textContent = "Error: " + e.message; $("fetch_status").className = "status err";
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = origHTML;
+    hideLoader();
+  }
+};
+
+async function submitMenuForm(formId, endpoint, statusEl, outEl, label) {
+  const form = $(formId);
+  const fd = new FormData(form);
+  const csv = fd.get("segids_csv");
+  if (csv !== null) {
+    fd.delete("segids_csv");
+    String(csv).split(",").map(s => s.trim()).filter(Boolean).forEach(s => fd.append("segids", s));
+  }
+  $(statusEl).textContent = "Uploading…"; $(statusEl).className = "status";
+  $(outEl).textContent = "";
+  showLoader(label, "Uploading files and posting to the manualmapping API.");
+  try {
+    const r = await fetch(endpoint, { method: "POST", body: fd });
+    const data = await r.json();
+    $(outEl).textContent = JSON.stringify(data, null, 2);
+    $(statusEl).textContent = r.ok ? "Done." : "Error";
+    $(statusEl).className = r.ok ? "status ok" : "status err";
+  } catch (e) {
+    $(statusEl).textContent = "Error: " + e.message; $(statusEl).className = "status err";
+  } finally {
+    hideLoader();
+  }
+}
+
+$("add_form").onsubmit = (ev) => { ev.preventDefault(); submitMenuForm("add_form", "/api/add_menu", "add_status", "add_output", "Adding menu…"); };
+$("edit_form").onsubmit = (ev) => { ev.preventDefault(); submitMenuForm("edit_form", "/api/edit_menu", "edit_status", "edit_output", "Editing menu…"); };
+
+async function deleteIds(ids) {
+  $("delete_output").textContent = "Deleting…";
+  showLoader(`Deleting ${ids.length} menu${ids.length > 1 ? "s" : ""}…`, "Calling DeleteMenu on the manualmapping API.");
+  try {
+    const r = await fetch("/api/delete_menu", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids }),
+    });
+    $("delete_output").textContent = JSON.stringify(await r.json(), null, 2);
+  } catch (e) {
+    $("delete_output").textContent = "Error: " + e.message;
+  } finally {
+    hideLoader();
+  }
+}
+
+function deleteOne(id) { if (confirm(`Delete menu id ${id}?`)) deleteIds([id]); }
+
+$("delete_btn").onclick = () => {
+  const csv = $("delete_ids").value || "";
+  const ids = csv.split(",").map(s => s.trim()).filter(Boolean);
+  if (!ids.length) { $("delete_output").textContent = "No IDs."; return; }
+  if (confirm(`Delete ${ids.length} menu(s)?`)) deleteIds(ids);
+};
+
+// ===== Search & clone =====
+function showSearchModal(title, matches) {
+  return new Promise((resolve) => {
+    $("search_title").textContent = title;
+    const list = $("search_results");
+    list.innerHTML = "";
+    let selected = null;
+    matches.forEach((m, i) => {
+      const div = document.createElement("div");
+      div.className = "item" + (i === 0 ? " selected" : "");
+      div.textContent = `[${m.modified}]  ${String(m.size_kb).padStart(8)} KB  ${m.path}`;
+      div.onclick = () => {
+        list.querySelectorAll(".item").forEach(x => x.classList.remove("selected"));
+        div.classList.add("selected");
+        selected = m;
+      };
+      div.ondblclick = () => { selected = m; close(true); };
+      list.append(div);
+    });
+    if (matches.length) selected = matches[0];
+
+    const modal = $("search_modal");
+    modal.style.display = "flex";
+    function close(ok) {
+      modal.style.display = "none";
+      $("search_cancel").onclick = null; $("search_select").onclick = null;
+      resolve(ok ? selected : null);
+    }
+    $("search_cancel").onclick = () => close(false);
+    $("search_select").onclick = () => close(true);
+  });
+}
+
+async function searchAndClone(kind, pathFieldName) {
+  const term = prompt(`Enter file name to search (${kind}):`);
+  if (!term) return;
+  showLoader(`Searching ${kind} files…`, "Walking the Realbooks folder for matches.");
+  let data;
+  try {
+    const r = await fetch("/api/search", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ term, kind }),
+    });
+    data = await r.json();
+    if (!r.ok) { alert("Search error: " + (data.error || r.status)); return; }
+  } finally { hideLoader(); }
+  if (!data.matches.length) { alert(`No files matching '${data.pattern}'`); return; }
+
+  const picked = await showSearchModal(`Select file (${data.matches.length} matches)`, data.matches);
+  if (!picked) return;
+
+  const domain = $("add_form").elements["domain_alias"].value.trim()
+              || (lastJob && (lastJob.deploy_to_domain || lastJob.domain_alias)) || "";
+  if (!domain) { alert("Fetch a job first — clone needs a Deploy TO domain to choose the destination folder."); return; }
+
+  const new_name = prompt(`Enter new file name for clone:\n(source: ${picked.path.split("/").pop()})\n(domain: ${domain})`);
+  if (!new_name) return;
+
+  showLoader("Cloning file…", `Copying into the ${domain} domain folder.`);
+  let cd;
+  try {
+    const cr = await fetch("/api/clone", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ src: picked.path, new_name, domain_alias: domain }),
+    });
+    cd = await cr.json();
+    if (!cr.ok) { alert("Clone error: " + (cd.error || cr.status)); return; }
+  } finally { hideLoader(); }
+
+  $("add_form").elements[pathFieldName].value = cd.clone_path;
+  $("edit_form").elements[pathFieldName].value = cd.clone_path;
+  alert(`Cloned → ${cd.clone_path}` + (cd.renamed ? " (existing — saved with timestamp suffix)" : ""));
+}
+
+$("clone_py_btn").onclick = () => searchAndClone("py", "py_file_path");
+$("clone_tpl_btn").onclick = () => searchAndClone("template", "template_file_path");
+
+$("create_py_btn").onclick = async () => {
+  if (!lastJob) { alert("Fetch a job first."); return; }
+  const job = lastJob.job, title = lastJob.title;
+  const domain = $("add_form").elements["domain_alias"].value.trim()
+              || lastJob.deploy_to_domain || lastJob.domain_alias || "";
+  if (!domain) { alert("Missing domain_alias."); return; }
+  if (!title) { alert("Missing job title."); return; }
+
+  async function send(overwrite) {
+    const r = await fetch("/api/create_py", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        job, title, domain_alias: domain,
+        menu_list: lastJob.menu_list || [],
+        src: $("add_form").elements["py_file_path"].value.trim() || "",
+        overwrite,
+      }),
+    });
+    return [r, await r.json()];
+  }
+  showLoader("Creating py file…", `Copying source into the ${domain} domain folder.`);
+  let r, data;
+  try {
+    [r, data] = await send(false);
+  } finally { hideLoader(); }
+  if (r.status === 409 && data.needs_overwrite) {
+    if (!confirm(`File exists:\n${data.dest}\n\nOverwrite?`)) return;
+    showLoader("Overwriting py file…", "");
+    try { [r, data] = await send(true); } finally { hideLoader(); }
+  }
+  if (!r.ok) { alert("Create error: " + (data.error || r.status)); return; }
+  $("add_form").elements["py_file_path"].value = data.dest;
+  $("edit_form").elements["py_file_path"].value = data.dest;
+  alert(`Created → ${data.dest}`);
+};
+</script>
+
+</body>
+</html>

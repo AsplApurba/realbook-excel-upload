@@ -1,0 +1,6 @@
+services:
+  - type: web
+    name: realbook-excel-upload
+    runtime: docker
+    plan: free
+    autoDeploy: true

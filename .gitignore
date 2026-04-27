@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+
+build/
+dist/
+logs/
+
+.DS_Store
+Thumbs.db
+
+/.gui_settings.json
+/tmp/

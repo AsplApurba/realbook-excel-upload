@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+build/
+dist/
+logs/
+.git/
+.gitignore
+.claude/
+*.mp4
