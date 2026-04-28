@@ -11,19 +11,14 @@ import tempfile
 import threading
 import time
 import traceback
-from datetime import date, datetime
+from datetime import datetime
 
 import sys
 
-import requests
 from flask import Flask, g, render_template, request, jsonify, send_from_directory
 from selenium.webdriver.support.ui import WebDriverWait
 
 from NEWFILE import (
-    MENULIST_URL,
-    RLB_BOX_PREFIX,
-    RLB_PASSWORD_PREFIX,
-    _pad_box,
     build_driver,
     login,
     fetch_job,
@@ -301,38 +296,6 @@ def _fill_from_flat(data: dict) -> None:
             data[f"deploy_{side}_domain"] = domain
 
 
-def _fetch_menu_list_raw(cid: str, segids: list[str], box_id: str, side: str = "") -> list[dict]:
-    """Return EVERY menu the server has for each (cid, segid, box). No menu_name filtering.
-
-    Each item is the raw dict the server returned, with `segid` and `side`
-    injected so the front-end can group/label the rows. Used to populate the
-    full menu list — fetch_menu_list() only returns the single best match per segid.
-    """
-    out: list[dict] = []
-    password = f"{RLB_PASSWORD_PREFIX}{date.today().strftime('%Y%m%d')}"
-    for segid in segids:
-        payload = {
-            "cid": cid,
-            "segid": segid,
-            "rlb_box_id": f"{RLB_BOX_PREFIX}{_pad_box(box_id)}",
-            "password": password,
-            "file_name": "",
-        }
-        try:
-            resp = requests.post(MENULIST_URL, data=payload, timeout=30).text
-            items = json.loads(resp).get("data") or []
-        except (requests.RequestException, ValueError):
-            items = []
-        for it in items:
-            row = dict(it)
-            row["segid"] = segid
-            row["side"] = side
-            row["py_file_path"] = str(it.get("py_file_path", "")).split("#@#", 1)[-1]
-            row["template_file_path"] = str(it.get("temp_file_path", "")).split("#@#", 1)[-1]
-            out.append(row)
-    return out
-
-
 @app.post("/api/job")
 def api_job():
     job_number = (request.json or {}).get("job_number", "").strip()
@@ -343,45 +306,26 @@ def api_job():
             driver, wait = _get_driver()
             data = fetch_job(driver, wait, job_number)
         _fill_from_flat(data)
-        box_id = data["box_id"]
-        # Query both Deploy From (the source — where py/template files already
-        # live) and Deploy To (the destination — where we'll add/edit). The
-        # match the user wants is usually on Deploy From; defaulting to only
-        # Deploy To hides it.
-        sides = []
-        if data.get("deploy_from_cid") and data.get("deploy_from_segids"):
-            sides.append(("from", data["deploy_from_cid"], data["deploy_from_segids"]))
-        if data.get("deploy_to_cid") and data.get("deploy_to_segids"):
-            sides.append(("to", data["deploy_to_cid"], data["deploy_to_segids"]))
+        box_id = data.get("box_id", "")
 
-        merged_match: list[dict] = []
-        merged_all: list[dict] = []
-        seen_ids = set()
-        for side, cid, segids in sides:
-            if not (cid and segids and box_id):
-                continue
-            for row in fetch_menu_list(cid, segids, box_id, menu_name=data["menu_name"]):
-                row = dict(row); row["side"] = side
-                if row.get("id") and row["id"] in seen_ids:
-                    continue
-                if row.get("id"): seen_ids.add(row["id"])
-                merged_match.append(row)
-            merged_all.extend(_fetch_menu_list_raw(cid, segids, box_id, side=side))
+        # Same shape gui.py uses: per-side menu lookup, stored as
+        # menu_list_from / menu_list_to. Default `menu_list` mirrors the
+        # FROM side (gui.py line 1566) so the existing prefill helpers see
+        # the same rows.
+        for side in ("from", "to"):
+            cid = data.get(f"deploy_{side}_cid") or ""
+            segids = data.get(f"deploy_{side}_segids") or []
+            box_id_lookup = data.get(f"deploy_{side}_box") or box_id or ""
+            menu_name_lookup = data.get(f"deploy_{side}_menu") or data.get("menu_name") or ""
+            if cid and segids and box_id_lookup:
+                rows = fetch_menu_list(cid, segids, box_id_lookup, menu_name=menu_name_lookup)
+                for row in rows:
+                    row["side"] = side
+                data[f"menu_list_{side}"] = rows
+            else:
+                data[f"menu_list_{side}"] = []
 
-        # Dedupe the raw list by id too so a menu that appears on both sides
-        # only renders once.
-        deduped_all: list[dict] = []
-        seen_all = set()
-        for row in merged_all:
-            rid = str(row.get("id") or "")
-            if rid and rid in seen_all:
-                continue
-            if rid: seen_all.add(rid)
-            deduped_all.append(row)
-
-        if sides:
-            data["menu_list"] = merged_match
-            data["menu_list_all"] = deduped_all
+        data["menu_list"] = data.get("menu_list_from") or data.get("menu_list_to") or []
         return jsonify(data)
     except Exception as e:
         return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
@@ -615,4 +559,4 @@ def api_delete_menu():
 
 if __name__ == "__main__":
     # Production: gunicorn -w 1 -b 0.0.0.0:8000 app:app
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "8000")), debug=False)
+    app.run(host="0.0.0.0", port=8000, debug=False)
