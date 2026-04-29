@@ -8,25 +8,16 @@ import os
 import re
 import shutil
 import tempfile
-import threading
 import time
 import traceback
-from datetime import date, datetime
+from datetime import datetime
 
 import sys
 
-import requests
 from flask import Flask, g, render_template, request, jsonify, send_from_directory
-from selenium.webdriver.support.ui import WebDriverWait
 
 from NEWFILE import (
-    MENULIST_URL,
-    RLB_BOX_PREFIX,
-    RLB_PASSWORD_PREFIX,
-    _pad_box,
-    build_driver,
-    login,
-    fetch_job,
+    api_fetch_job,
     fetch_menu_list,
     add_menu,
     edit_menu,
@@ -68,6 +59,7 @@ def _cleanup_old_logs() -> None:
 
 _cleanup_old_logs()
 LOG_PATH = os.path.join(LOGS_DIR, f"web_{datetime.now().strftime('%Y%m%d')}.log")
+JOB_OVERRIDES_PATH = os.path.join(APP_DIR, "job_overrides.json")
 
 logger = logging.getLogger("realbook_web")
 logger.setLevel(logging.INFO)
@@ -121,21 +113,6 @@ EXTRA_FILE_ROOTS = [
         f"{os.path.expanduser('~/Downloads')}:{os.path.expanduser('~/Desktop')}:{os.path.dirname(os.path.abspath(__file__))}",
     ).split(":") if p.strip()
 ]
-
-# Selenium drivers are NOT thread-safe and Chrome is heavy to spin up per request.
-_driver_lock = threading.Lock()
-_driver = None
-_wait = None
-
-
-def _get_driver():
-    global _driver, _wait
-    if _driver is None:
-        _driver = build_driver(headless=True)
-        _wait = WebDriverWait(_driver, 25)
-        login(_driver, _wait)
-    return _driver, _wait
-
 
 def _sanitize(name: str) -> str:
     name = re.sub(r"[^A-Za-z0-9]+", "_", name or "").strip("_")
@@ -233,30 +210,104 @@ _FLAT_FIELD_MAP = {
     "box no": "box_id",
     "cid": "cid",
     "c id": "cid",
+    "c name": "cid",
     "seg id": "segid",
     "segid": "segid",
     "menu": "menu_name",
     "menu name": "menu_name",
+    "manu name": "menu_name",
     "gstin": "gstin",
 }
 
 
+def _flat_make_plain_patterns() -> list[tuple[str, "re.Pattern"]]:
+    patterns = []
+    for k in sorted(_FLAT_FIELD_MAP.keys(), key=len, reverse=True):
+        key_re = r"\s+".join(re.escape(t) for t in k.split())
+        patterns.append(
+            (_FLAT_FIELD_MAP[k], re.compile(r"^\s*" + key_re + r"\s+(.+?)\s*$", flags=re.I))
+        )
+    return patterns
+
+
+_FLAT_PLAIN_PATTERNS = _flat_make_plain_patterns()
+
+
+def _load_job_overrides() -> dict:
+    try:
+        with open(JOB_OVERRIDES_PATH, "r", encoding="utf-8") as f:
+            raw = json.load(f) or {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return {str(k).upper(): v for k, v in raw.items() if isinstance(v, dict)}
+
+
+def _apply_job_override(data: dict) -> None:
+    override = _load_job_overrides().get(str(data.get("job") or "").upper())
+    if not override:
+        return
+    for key, val in override.items():
+        if val not in (None, "", []):
+            data[key] = val
+
+
+def _has_meaningful_menu_rows(rows: list[dict]) -> bool:
+    meaningful_keys = ("id", "menu_name", "py_file_path", "template_file_path", "gstin")
+    return any(any(str(row.get(k) or "").strip() for k in meaningful_keys) for row in rows or [])
+
+
+def _fetch_menu_list_with_fallback(
+    cid: str,
+    segids: list[str],
+    box_id: str,
+    *,
+    menu_name: str = "",
+    format_type: str = "new",
+    return_all: bool = False,
+) -> list[dict]:
+    rows = fetch_menu_list(
+        cid, segids, box_id,
+        menu_name=menu_name,
+        format_type=format_type,
+        return_all=return_all,
+    )
+    if format_type == "new" and not _has_meaningful_menu_rows(rows):
+        rows = fetch_menu_list(
+            cid, segids, box_id,
+            menu_name=menu_name,
+            format_type="old",
+            return_all=True,
+        )
+    return rows
+
+
 def _flat_parse_description(description: str) -> dict:
-    """Parse 'Key - Value' lines (e.g. 'Cid - 12996', 'Menu - AMEX', 'Seg id - 13009')."""
+    """Parse 'Key - Value' / 'Key: Value' / 'Key is Value' lines, with a
+    whitespace-only fallback (e.g. 'CID 5342', 'SEG ID 5353')."""
     out: dict = {}
     if not description:
         return out
     for line in description.splitlines():
-        m = re.match(r"\s*([A-Za-z][A-Za-z ]*?)\s*[-:=]\s*(.+?)\s*$", line)
-        if not m:
+        m = re.match(
+            r"\s*([A-Za-z][A-Za-z ]*?)\s*(?:[-:=]|\bis\b)\s*(.+?)\s*$",
+            line, flags=re.I,
+        )
+        if m:
+            key = re.sub(r"\s+", " ", m.group(1).strip().lower())
+            val = m.group(2).strip()
+            if not val:
+                continue
+            target = _FLAT_FIELD_MAP.get(key)
+            if target and target not in out:
+                out[target] = val
             continue
-        key = re.sub(r"\s+", " ", m.group(1).strip().lower())
-        val = m.group(2).strip()
-        if not val:
-            continue
-        target = _FLAT_FIELD_MAP.get(key)
-        if target and target not in out:
-            out[target] = val
+        for target, pat in _FLAT_PLAIN_PATTERNS:
+            mm = pat.match(line)
+            if mm:
+                val = mm.group(1).strip()
+                if val and target not in out:
+                    out[target] = val
+                break
     return out
 
 
@@ -285,6 +336,8 @@ def _fill_from_flat(data: dict) -> None:
     gstin = flat.get("gstin", "") or data.get("gstin", "")
     domain = flat.get("domain_alias", "") or data.get("domain_alias", "")
     segids = re.findall(r"\d+", segid) if segid else []
+    if not segids and cid:
+        segids = [cid]
 
     for side in ("from", "to"):
         if cid and not data.get(f"deploy_{side}_cid"):
@@ -301,88 +354,82 @@ def _fill_from_flat(data: dict) -> None:
             data[f"deploy_{side}_domain"] = domain
 
 
-def _fetch_menu_list_raw(cid: str, segids: list[str], box_id: str, side: str = "") -> list[dict]:
-    """Return EVERY menu the server has for each (cid, segid, box). No menu_name filtering.
-
-    Each item is the raw dict the server returned, with `segid` and `side`
-    injected so the front-end can group/label the rows. Used to populate the
-    full menu list — fetch_menu_list() only returns the single best match per segid.
-    """
-    out: list[dict] = []
-    password = f"{RLB_PASSWORD_PREFIX}{date.today().strftime('%Y%m%d')}"
-    for segid in segids:
-        payload = {
-            "cid": cid,
-            "segid": segid,
-            "rlb_box_id": f"{RLB_BOX_PREFIX}{_pad_box(box_id)}",
-            "password": password,
-            "file_name": "",
-        }
-        try:
-            resp = requests.post(MENULIST_URL, data=payload, timeout=30).text
-            items = json.loads(resp).get("data") or []
-        except (requests.RequestException, ValueError):
-            items = []
-        for it in items:
-            row = dict(it)
-            row["segid"] = segid
-            row["side"] = side
-            row["py_file_path"] = str(it.get("py_file_path", "")).split("#@#", 1)[-1]
-            row["template_file_path"] = str(it.get("temp_file_path", "")).split("#@#", 1)[-1]
-            out.append(row)
-    return out
-
-
 @app.post("/api/job")
 def api_job():
-    job_number = (request.json or {}).get("job_number", "").strip()
+    body = request.json or {}
+    job_number = body.get("job_number", "").strip()
+    menu_list_format = (body.get("menu_list_format") or "new").strip().lower()
+    if menu_list_format not in ("new", "old"):
+        menu_list_format = "new"
     if not job_number:
         return jsonify({"error": "job_number required"}), 400
     try:
-        with _driver_lock:
-            driver, wait = _get_driver()
-            data = fetch_job(driver, wait, job_number)
+        data = api_fetch_job(job_number)
         _fill_from_flat(data)
-        box_id = data["box_id"]
-        # Query both Deploy From (the source — where py/template files already
-        # live) and Deploy To (the destination — where we'll add/edit). The
-        # match the user wants is usually on Deploy From; defaulting to only
-        # Deploy To hides it.
-        sides = []
-        if data.get("deploy_from_cid") and data.get("deploy_from_segids"):
-            sides.append(("from", data["deploy_from_cid"], data["deploy_from_segids"]))
-        if data.get("deploy_to_cid") and data.get("deploy_to_segids"):
-            sides.append(("to", data["deploy_to_cid"], data["deploy_to_segids"]))
+        _apply_job_override(data)
+        box_id = data.get("box_id", "")
 
-        merged_match: list[dict] = []
-        merged_all: list[dict] = []
-        seen_ids = set()
-        for side, cid, segids in sides:
-            if not (cid and segids and box_id):
-                continue
-            for row in fetch_menu_list(cid, segids, box_id, menu_name=data["menu_name"]):
-                row = dict(row); row["side"] = side
-                if row.get("id") and row["id"] in seen_ids:
-                    continue
-                if row.get("id"): seen_ids.add(row["id"])
-                merged_match.append(row)
-            merged_all.extend(_fetch_menu_list_raw(cid, segids, box_id, side=side))
+        # Same shape gui.py uses: per-side menu lookup, stored as
+        # menu_list_from / menu_list_to. Default `menu_list` mirrors the
+        # FROM side (gui.py line 1566) so the existing prefill helpers see
+        # the same rows.
+        use_old_fmt = menu_list_format == "old"
+        for side in ("from", "to"):
+            cid = data.get(f"deploy_{side}_cid") or ""
+            segids = data.get(f"deploy_{side}_segids") or []
+            box_id_lookup = data.get(f"deploy_{side}_box") or box_id or ""
+            menu_name_lookup = data.get(f"deploy_{side}_menu") or data.get("menu_name") or ""
+            if cid and segids and box_id_lookup:
+                rows = _fetch_menu_list_with_fallback(
+                    cid, segids, box_id_lookup,
+                    menu_name=menu_name_lookup,
+                    format_type=menu_list_format,
+                    return_all=use_old_fmt,
+                )
+                for row in rows:
+                    row["side"] = side
+                data[f"menu_list_{side}"] = rows
+            else:
+                data[f"menu_list_{side}"] = []
 
-        # Dedupe the raw list by id too so a menu that appears on both sides
-        # only renders once.
-        deduped_all: list[dict] = []
-        seen_all = set()
-        for row in merged_all:
-            rid = str(row.get("id") or "")
-            if rid and rid in seen_all:
-                continue
-            if rid: seen_all.add(rid)
-            deduped_all.append(row)
-
-        if sides:
-            data["menu_list"] = merged_match
-            data["menu_list_all"] = deduped_all
+        data["menu_list"] = data.get("menu_list_from") or data.get("menu_list_to") or []
         return jsonify(data)
+    except Exception as e:
+        return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
+
+
+@app.post("/api/menu_search")
+def api_menu_search():
+    """Manual menu-list lookup. Mirrors the GUI's Search button: takes
+    cid / segid(s) / box_id (and optional menu_name + format) and always
+    returns every row the listing produces."""
+    body = request.json or {}
+    cid = (body.get("cid") or "").strip()
+    box_id = (body.get("box_id") or "").strip()
+    menu_name = (body.get("menu_name") or "").strip()
+    fmt = (body.get("menu_list_format") or "new").strip().lower()
+    if fmt not in ("new", "old"):
+        fmt = "new"
+
+    raw_segids = body.get("segids")
+    if isinstance(raw_segids, str):
+        segids = [s for s in re.split(r"[\s,]+", raw_segids) if s]
+    elif isinstance(raw_segids, list):
+        segids = [str(s).strip() for s in raw_segids if str(s).strip()]
+    else:
+        segids = []
+
+    missing = [n for n, v in (("cid", cid), ("segids", segids), ("box_id", box_id)) if not v]
+    if missing:
+        return jsonify({"error": "missing: " + ", ".join(missing)}), 400
+    try:
+        rows = _fetch_menu_list_with_fallback(
+            cid, segids, box_id,
+            menu_name=menu_name,
+            format_type=fmt,
+            return_all=True,
+        )
+        return jsonify({"rows": rows})
     except Exception as e:
         return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
 
@@ -614,5 +661,8 @@ def api_delete_menu():
 
 
 if __name__ == "__main__":
-    # Production: gunicorn -w 1 -b 0.0.0.0:8000 app:app
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "8000")), debug=False)
+    # Render (and most PaaS hosts) inject the bind port via $PORT.
+    # Falls back to 8000 for local dev.
+    # Production: gunicorn -w 1 -b 0.0.0.0:$PORT app:app
+    port = int(os.environ.get("PORT", "8000"))
+    app.run(host="0.0.0.0", port=port, debug=False)
