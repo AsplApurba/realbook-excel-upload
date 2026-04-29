@@ -120,6 +120,12 @@
 <div class="panel">
   <div class="row">
     <div style="flex:3"><label>Job number</label><input type="text" id="job_number" placeholder="160911 or job-160911"></div>
+    <div style="flex:1"><label>Menu format</label>
+      <select id="menu_list_format">
+        <option value="new" selected>new</option>
+        <option value="old">old</option>
+      </select>
+    </div>
     <div style="flex:0; align-self: flex-end"><button id="fetch_btn">Fetch job</button></div>
   </div>
   <div id="fetch_status" class="status"></div>
@@ -142,12 +148,14 @@
 <div class="panel" id="menu_list_panel" style="display:none">
   <h2>Menu list <span class="status" id="menu_list_count"></span></h2>
   <div class="row" style="align-items:flex-end; margin-bottom:8px">
+    <div style="flex:1"><label>Cid</label><input type="text" id="menu_search_cid"></div>
+    <div style="flex:1"><label>Segid (comma-sep)</label><input type="text" id="menu_search_segid"></div>
+    <div style="flex:1"><label>Box</label><input type="text" id="menu_search_box"></div>
+    <div style="flex:0"><button type="button" id="menu_search_btn">Search</button></div>
+  </div>
+  <div id="menu_search_status" class="status"></div>
+  <div class="row" style="align-items:flex-end; margin-bottom:8px">
     <div style="flex:3"><label>Filter (py file name)</label><input type="text" id="menu_filter" placeholder="match by py file path / name"></div>
-    <div style="flex:0">
-      <label style="display:inline-flex; align-items:center; gap:6px; font-weight:400">
-        <input type="checkbox" id="only_matched"> Only matched menu_name
-      </label>
-    </div>
     <div style="flex:0"><button class="secondary" type="button" id="menu_filter_clear">Clear</button></div>
   </div>
   <div style="overflow-x:auto">
@@ -287,26 +295,20 @@ let lastJob = null;
 
 const $ = (id) => document.getElementById(id);
 
-async function readApiResponse(response) {
-  const raw = await response.text();
-  let data = null;
+// Fetch + JSON parse that surfaces non-JSON server responses (e.g. an HTML
+// 502/503 page from the host) instead of the raw "JSON.parse: unexpected
+// character at line 1 column 1" the browser would otherwise throw.
+async function fetchJson(url, init) {
+  const r = await fetch(url, init);
+  const text = await r.text();
+  let data;
   try {
-    data = raw ? JSON.parse(raw) : null;
-  } catch (_err) {
-    data = null;
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    const snippet = text.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 200);
+    throw new Error(`Server returned HTTP ${r.status} (non-JSON). ${snippet || "(empty body)"}`);
   }
-  return { ok: response.ok, status: response.status, data, raw };
-}
-
-function getApiErrorMessage(result, fallback) {
-  if (result && result.data) {
-    if (typeof result.data.error === "string" && result.data.error.trim()) return result.data.error.trim();
-    if (typeof result.data.message === "string" && result.data.message.trim()) return result.data.message.trim();
-  }
-  if (result && typeof result.raw === "string" && result.raw.trim()) {
-    return result.raw.trim().slice(0, 500);
-  }
-  return fallback || "Request failed";
+  return { r, data };
 }
 
 const SUMMARY_FIELDS = [
@@ -331,23 +333,26 @@ function renderSummary(data) {
   $("summary_panel").style.display = "block";
 }
 
-let _menuRows = [];          // {id, item, matched}
-let _matchedCount = 0;
+let _menuRowsBySide = { from: [], to: [] };
 
-function renderMenuList(items, matchedItems) {
-  const matchedIds = new Set((matchedItems || []).map(m => String(m.id || "")).filter(Boolean));
-  const all = items && items.length ? items : (matchedItems || []);
-  _menuRows = all.map(it => {
-    const id = String(it.id || it.menu_id || it._id || "");
-    return { id, item: it, matched: id ? matchedIds.has(id) : false };
-  });
-  _matchedCount = _menuRows.filter(r => r.matched).length;
+function renderMenuList(data) {
+  const fromRows = (data.menu_list_from || []).map(r => ({ ...r, side: "from" }));
+  const toRows = (data.menu_list_to || []).map(r => ({ ...r, side: "to" }));
+  _menuRowsBySide = { from: fromRows, to: toRows };
   $("menu_list_panel").style.display = "block";
-  // Default the filter to the matched menu's py-file basename, scoped strictly
-  // to py_file_path. User can edit/clear to broaden.
-  const firstMatched = (matchedItems || []).find(m => (m.py_file_path || "").trim());
-  $("menu_filter").value = firstMatched
-    ? String(firstMatched.py_file_path).split("/").pop()
+
+  // Mirror gui.py: prefer FROM if it has rows, otherwise TO.
+  const defaultSide = fromRows.length ? "from" : "to";
+  const radio = document.querySelector(`input[name="source"][value="${defaultSide}"]`);
+  if (radio) radio.checked = true;
+  applyMenuSearchPrefill();
+
+  // Default the filter to the first row's py-file basename so the table
+  // narrows to the relevant menu by default.
+  const all = [...fromRows, ...toRows];
+  const firstWithPy = all.find(r => (r.py_file_path || "").trim());
+  $("menu_filter").value = firstWithPy
+    ? String(firstWithPy.py_file_path).split("/").pop()
     : "";
   applyMenuFilter();
 }
@@ -356,19 +361,19 @@ function applyMenuFilter() {
   const tbody = $("menu_list_table").querySelector("tbody");
   tbody.innerHTML = "";
   const q = ($("menu_filter").value || "").trim().toLowerCase();
-  const onlyMatched = $("only_matched").checked;
+  const sourceEl = document.querySelector('input[name="source"]:checked');
+  const side = sourceEl ? sourceEl.value : "from";
+  const rows = _menuRowsBySide[side] || [];
   let shown = 0;
-  for (const r of _menuRows) {
-    if (onlyMatched && !r.matched) continue;
-    const it = r.item;
+  for (const it of rows) {
     const haystack = String(it.py_file_path || "").toLowerCase();
     if (q && !haystack.includes(q)) continue;
     shown++;
+    const id = String(it.id || it.menu_id || it._id || "");
     const tr = document.createElement("tr");
-    if (r.matched) tr.style.background = "#fef9c3";
     const cells = [
       it.side ? it.side.toUpperCase() : "",
-      r.id, it.segid || "", it.menu_name || "", it.py_file_path || "", it.template_file_path || "",
+      id, it.segid || "", it.menu_name || "", it.py_file_path || "", it.template_file_path || "",
       it.gstin || "", it.rlb_module_type || "", it.file_ext_type || "",
       it.is_ledger_creation || "", it.is_item_creation || "",
       it.is_cc_creation || "", it.is_tagg_creation || "",
@@ -377,7 +382,7 @@ function applyMenuFilter() {
       const td = document.createElement("td"); td.textContent = c; tr.append(td);
     }
     const tdAct = document.createElement("td");
-    if (r.id) {
+    if (id) {
       const useBtn = document.createElement("button");
       useBtn.textContent = "Use"; useBtn.style.padding = "2px 8px"; useBtn.style.fontSize = "11px";
       useBtn.onclick = (ev) => { ev.preventDefault(); useMenuRow(it); };
@@ -385,22 +390,81 @@ function applyMenuFilter() {
       const delBtn = document.createElement("button");
       delBtn.className = "danger"; delBtn.textContent = "Delete";
       delBtn.style.padding = "2px 8px"; delBtn.style.fontSize = "11px"; delBtn.style.marginLeft = "4px";
-      delBtn.onclick = (ev) => { ev.preventDefault(); deleteOne(r.id); };
+      delBtn.onclick = (ev) => { ev.preventDefault(); deleteOne(id); };
       tdAct.append(delBtn);
     }
     tr.append(tdAct);
     tbody.append(tr);
   }
-  const total = _menuRows.length;
+  const total = rows.length;
+  const label = side === "from" ? "Deploy From" : "Deploy To";
   $("menu_list_count").textContent = total
-    ? `(showing ${shown} of ${total} on server, ${_matchedCount} matched menu_name)`
-    : "(none)";
+    ? `(${label}: showing ${shown} of ${total})`
+    : `(${label}: none)`;
 }
 
 $("menu_filter").addEventListener("input", applyMenuFilter);
-$("only_matched").addEventListener("change", applyMenuFilter);
 $("menu_filter_clear").onclick = () => {
-  $("menu_filter").value = ""; $("only_matched").checked = false; applyMenuFilter();
+  $("menu_filter").value = ""; applyMenuFilter();
+};
+
+function applyMenuSearchPrefill() {
+  if (!lastJob) return;
+  const sourceEl = document.querySelector('input[name="source"]:checked');
+  const side = sourceEl ? sourceEl.value : "from";
+  const cid = lastJob[`deploy_${side}_cid`] || "";
+  const segids = lastJob[`deploy_${side}_segids`] || [];
+  const box = lastJob[`deploy_${side}_box`] || lastJob.box_id || "";
+  $("menu_search_cid").value = cid;
+  $("menu_search_segid").value = Array.isArray(segids) ? segids.join(",") : (segids || "");
+  $("menu_search_box").value = box;
+}
+
+document.querySelectorAll('input[name="source"]').forEach(el =>
+  el.addEventListener("change", () => { applyMenuSearchPrefill(); applyMenuFilter(); })
+);
+
+$("menu_search_btn").onclick = async () => {
+  const btn = $("menu_search_btn");
+  const cid = $("menu_search_cid").value.trim();
+  const segidRaw = $("menu_search_segid").value.trim();
+  const box = $("menu_search_box").value.trim();
+  const segids = segidRaw.split(/[\s,]+/).filter(Boolean);
+  if (!cid || !segids.length || !box) {
+    $("menu_search_status").textContent = "Cid, Segid and Box are all required.";
+    $("menu_search_status").className = "status err";
+    return;
+  }
+  btn.disabled = true;
+  $("menu_search_status").textContent = "Searching menu list…";
+  $("menu_search_status").className = "status";
+  const fmt = ($("menu_list_format")?.value || "new");
+  const sourceEl = document.querySelector('input[name="source"]:checked');
+  const side = sourceEl ? sourceEl.value : "from";
+  const menuName = lastJob ? (lastJob[`deploy_${side}_menu`] || lastJob.menu_name || "") : "";
+  try {
+    const { r, data } = await fetchJson("/api/menu_search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        cid, segids, box_id: box,
+        menu_name: menuName,
+        menu_list_format: fmt,
+      }),
+    });
+    if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+    const rows = (data.rows || []).map(x => ({ ...x, side }));
+    _menuRowsBySide[side] = rows;
+    if (lastJob) lastJob[`menu_list_${side}`] = rows;
+    applyMenuFilter();
+    $("menu_search_status").textContent = `Returned ${rows.length} row(s).`;
+    $("menu_search_status").className = "status ok";
+  } catch (e) {
+    $("menu_search_status").textContent = "Error: " + e.message;
+    $("menu_search_status").className = "status err";
+  } finally {
+    btn.disabled = false;
+  }
 };
 
 function useMenuRow(it) {
@@ -451,7 +515,10 @@ function prefillForms() {
   sel.value = moduleType;
 }
 
-document.querySelectorAll('input[name="source"]').forEach(r => r.addEventListener("change", prefillForms));
+document.querySelectorAll('input[name="source"]').forEach(r => r.addEventListener("change", () => {
+  prefillForms();
+  applyMenuFilter();
+}));
 
 // Loader with simulated percentage — eases towards 95% over time, snaps to
 // 100% when the underlying request finishes. The cheetah animation is
@@ -496,17 +563,16 @@ $("fetch_btn").onclick = async () => {
   showLoader(`Fetching JOB-${job.replace(/^job-/i, "")}…`, "Logging in to RealBooks and loading the job page.", 15);
   $("fetch_status").textContent = ""; $("fetch_status").className = "status";
   try {
-    const r = await fetch("/api/job", {
+    const fmt = ($("menu_list_format")?.value || "new");
+    const { r, data } = await fetchJson("/api/job", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ job_number: job }),
+      body: JSON.stringify({ job_number: job, menu_list_format: fmt }),
     });
-    const result = await readApiResponse(r);
-    if (!result.ok) throw new Error(getApiErrorMessage(result, "fetch failed"));
-    if (!result.data) throw new Error("Server returned non-JSON success response.");
-    lastJob = result.data;
-    renderSummary(result.data);
-    renderMenuList(result.data.menu_list_all || [], result.data.menu_list || []);
+    if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+    lastJob = data;
+    renderSummary(data);
+    renderMenuList(data);
     prefillForms();
     $("fetch_status").textContent = "Loaded."; $("fetch_status").className = "status ok";
   } catch (e) {
@@ -530,13 +596,10 @@ async function submitMenuForm(formId, endpoint, statusEl, outEl, label) {
   $(outEl).textContent = "";
   showLoader(label, "Uploading files and posting to the manualmapping API.");
   try {
-    const r = await fetch(endpoint, { method: "POST", body: fd });
-    const result = await readApiResponse(r);
-    $(outEl).textContent = result.data
-      ? JSON.stringify(result.data, null, 2)
-      : (result.raw || "");
-    $(statusEl).textContent = result.ok ? "Done." : ("Error: " + getApiErrorMessage(result, "request failed"));
-    $(statusEl).className = result.ok ? "status ok" : "status err";
+    const { r, data } = await fetchJson(endpoint, { method: "POST", body: fd });
+    $(outEl).textContent = JSON.stringify(data, null, 2);
+    $(statusEl).textContent = r.ok ? "Done." : "Error";
+    $(statusEl).className = r.ok ? "status ok" : "status err";
   } catch (e) {
     $(statusEl).textContent = "Error: " + e.message; $(statusEl).className = "status err";
   } finally {
@@ -551,16 +614,12 @@ async function deleteIds(ids) {
   $("delete_output").textContent = "Deleting…";
   showLoader(`Deleting ${ids.length} menu${ids.length > 1 ? "s" : ""}…`, "Calling DeleteMenu on the manualmapping API.");
   try {
-    const r = await fetch("/api/delete_menu", {
+    const { data } = await fetchJson("/api/delete_menu", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ids }),
     });
-    const result = await readApiResponse(r);
-    $("delete_output").textContent = result.data
-      ? JSON.stringify(result.data, null, 2)
-      : (result.raw || "");
-    if (!result.ok) $("delete_output").textContent = "Error: " + getApiErrorMessage(result, "delete failed");
+    $("delete_output").textContent = JSON.stringify(data, null, 2);
   } catch (e) {
     $("delete_output").textContent = "Error: " + e.message;
   } finally {
@@ -616,14 +675,14 @@ async function searchAndClone(kind, pathFieldName) {
   showLoader(`Searching ${kind} files…`, "Walking the Realbooks folder for matches.");
   let data;
   try {
-    const r = await fetch("/api/search", {
+    const res = await fetchJson("/api/search", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ term, kind }),
     });
-    const result = await readApiResponse(r);
-    if (!result.ok) { alert("Search error: " + getApiErrorMessage(result, String(result.status))); return; }
-    data = result.data || { matches: [] };
-  } finally { hideLoader(); }
+    data = res.data;
+    if (!res.r.ok) { alert("Search error: " + (data.error || res.r.status)); return; }
+  } catch (e) { alert("Search error: " + e.message); return; }
+  finally { hideLoader(); }
   if (!data.matches.length) { alert(`No files matching '${data.pattern}'`); return; }
 
   const picked = await showSearchModal(`Select file (${data.matches.length} matches)`, data.matches);
@@ -639,14 +698,14 @@ async function searchAndClone(kind, pathFieldName) {
   showLoader("Cloning file…", `Copying into the ${domain} domain folder.`);
   let cd;
   try {
-    const cr = await fetch("/api/clone", {
+    const cres = await fetchJson("/api/clone", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ src: picked.path, new_name, domain_alias: domain }),
     });
-    const result = await readApiResponse(cr);
-    cd = result.data || {};
-    if (!result.ok) { alert("Clone error: " + getApiErrorMessage(result, String(result.status))); return; }
-  } finally { hideLoader(); }
+    cd = cres.data;
+    if (!cres.r.ok) { alert("Clone error: " + (cd.error || cres.r.status)); return; }
+  } catch (e) { alert("Clone error: " + e.message); return; }
+  finally { hideLoader(); }
 
   $("add_form").elements[pathFieldName].value = cd.clone_path;
   $("edit_form").elements[pathFieldName].value = cd.clone_path;
@@ -665,7 +724,7 @@ $("create_py_btn").onclick = async () => {
   if (!title) { alert("Missing job title."); return; }
 
   async function send(overwrite) {
-    const r = await fetch("/api/create_py", {
+    const { r, data } = await fetchJson("/api/create_py", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         job, title, domain_alias: domain,
@@ -674,27 +733,25 @@ $("create_py_btn").onclick = async () => {
         overwrite,
       }),
     });
-    const result = await readApiResponse(r);
-    return [r, result];
+    return [r, data];
   }
   showLoader("Creating py file…", `Copying source into the ${domain} domain folder.`);
-  let r, result;
+  let r, data;
   try {
-    [r, result] = await send(false);
-  } finally { hideLoader(); }
-  const data = result.data || {};
+    [r, data] = await send(false);
+  } catch (e) { alert("Create error: " + e.message); return; }
+  finally { hideLoader(); }
   if (r.status === 409 && data.needs_overwrite) {
     if (!confirm(`File exists:\n${data.dest}\n\nOverwrite?`)) return;
     showLoader("Overwriting py file…", "");
-    try {
-      [r, result] = await send(true);
-    } finally { hideLoader(); }
+    try { [r, data] = await send(true); }
+    catch (e) { alert("Create error: " + e.message); return; }
+    finally { hideLoader(); }
   }
-  const finalData = (result && result.data) || {};
-  if (!r.ok) { alert("Create error: " + getApiErrorMessage(result, String(r.status))); return; }
-  $("add_form").elements["py_file_path"].value = finalData.dest;
-  $("edit_form").elements["py_file_path"].value = finalData.dest;
-  alert(`Created → ${finalData.dest}`);
+  if (!r.ok) { alert("Create error: " + (data.error || r.status)); return; }
+  $("add_form").elements["py_file_path"].value = data.dest;
+  $("edit_form").elements["py_file_path"].value = data.dest;
+  alert(`Created → ${data.dest}`);
 };
 </script>
 
