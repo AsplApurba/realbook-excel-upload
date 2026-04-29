@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import tempfile
+import threading
 import time
 import traceback
 from datetime import datetime
@@ -15,9 +16,12 @@ from datetime import datetime
 import sys
 
 from flask import Flask, g, render_template, request, jsonify, send_from_directory
+from selenium.webdriver.support.ui import WebDriverWait
 
 from NEWFILE import (
-    api_fetch_job,
+    build_driver,
+    login,
+    fetch_job,
     fetch_menu_list,
     add_menu,
     edit_menu,
@@ -113,6 +117,21 @@ EXTRA_FILE_ROOTS = [
         f"{os.path.expanduser('~/Downloads')}:{os.path.expanduser('~/Desktop')}:{os.path.dirname(os.path.abspath(__file__))}",
     ).split(":") if p.strip()
 ]
+
+# Selenium drivers are not thread-safe and Chrome is heavy to spin up per request.
+_driver_lock = threading.Lock()
+_driver = None
+_wait = None
+
+
+def _get_driver():
+    global _driver, _wait
+    if _driver is None:
+        _driver = build_driver(headless=True)
+        _wait = WebDriverWait(_driver, 25)
+        login(_driver, _wait)
+    return _driver, _wait
+
 
 def _sanitize(name: str) -> str:
     name = re.sub(r"[^A-Za-z0-9]+", "_", name or "").strip("_")
@@ -265,20 +284,7 @@ def _fetch_menu_list_with_fallback(
     format_type: str = "new",
     return_all: bool = False,
 ) -> list[dict]:
-    rows = fetch_menu_list(
-        cid, segids, box_id,
-        menu_name=menu_name,
-        format_type=format_type,
-        return_all=return_all,
-    )
-    if format_type == "new" and not _has_meaningful_menu_rows(rows):
-        rows = fetch_menu_list(
-            cid, segids, box_id,
-            menu_name=menu_name,
-            format_type="old",
-            return_all=True,
-        )
-    return rows
+    return fetch_menu_list(cid, segids, box_id, menu_name=menu_name)
 
 
 def _flat_parse_description(description: str) -> dict:
@@ -364,7 +370,9 @@ def api_job():
     if not job_number:
         return jsonify({"error": "job_number required"}), 400
     try:
-        data = api_fetch_job(job_number)
+        with _driver_lock:
+            driver, wait = _get_driver()
+            data = fetch_job(driver, wait, job_number)
         _fill_from_flat(data)
         _apply_job_override(data)
         box_id = data.get("box_id", "")
@@ -373,7 +381,6 @@ def api_job():
         # menu_list_from / menu_list_to. Default `menu_list` mirrors the
         # FROM side (gui.py line 1566) so the existing prefill helpers see
         # the same rows.
-        use_old_fmt = menu_list_format == "old"
         for side in ("from", "to"):
             cid = data.get(f"deploy_{side}_cid") or ""
             segids = data.get(f"deploy_{side}_segids") or []
@@ -384,7 +391,6 @@ def api_job():
                     cid, segids, box_id_lookup,
                     menu_name=menu_name_lookup,
                     format_type=menu_list_format,
-                    return_all=use_old_fmt,
                 )
                 for row in rows:
                     row["side"] = side

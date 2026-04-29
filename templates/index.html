@@ -295,20 +295,26 @@ let lastJob = null;
 
 const $ = (id) => document.getElementById(id);
 
-// Fetch + JSON parse that surfaces non-JSON server responses (e.g. an HTML
-// 502/503 page from the host) instead of the raw "JSON.parse: unexpected
-// character at line 1 column 1" the browser would otherwise throw.
-async function fetchJson(url, init) {
-  const r = await fetch(url, init);
-  const text = await r.text();
-  let data;
+async function readApiResponse(response) {
+  const raw = await response.text();
+  let data = null;
   try {
-    data = text ? JSON.parse(text) : {};
-  } catch {
-    const snippet = text.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 200);
-    throw new Error(`Server returned HTTP ${r.status} (non-JSON). ${snippet || "(empty body)"}`);
+    data = raw ? JSON.parse(raw) : null;
+  } catch (_err) {
+    data = null;
   }
-  return { r, data };
+  return { ok: response.ok, status: response.status, data, raw };
+}
+
+function getApiErrorMessage(result, fallback) {
+  if (result && result.data) {
+    if (typeof result.data.error === "string" && result.data.error.trim()) return result.data.error.trim();
+    if (typeof result.data.message === "string" && result.data.message.trim()) return result.data.message.trim();
+  }
+  if (result && typeof result.raw === "string" && result.raw.trim()) {
+    return result.raw.trim().slice(0, 500);
+  }
+  return fallback || "Request failed";
 }
 
 const SUMMARY_FIELDS = [
@@ -340,19 +346,11 @@ function renderMenuList(data) {
   const toRows = (data.menu_list_to || []).map(r => ({ ...r, side: "to" }));
   _menuRowsBySide = { from: fromRows, to: toRows };
   $("menu_list_panel").style.display = "block";
-
-  // Mirror gui.py: prefer FROM if it has rows, otherwise TO.
-  const defaultSide = fromRows.length ? "from" : "to";
-  const radio = document.querySelector(`input[name="source"][value="${defaultSide}"]`);
-  if (radio) radio.checked = true;
-  applyMenuSearchPrefill();
-
-  // Default the filter to the first row's py-file basename so the table
-  // narrows to the relevant menu by default.
-  const all = [...fromRows, ...toRows];
-  const firstWithPy = all.find(r => (r.py_file_path || "").trim());
-  $("menu_filter").value = firstWithPy
-    ? String(firstWithPy.py_file_path).split("/").pop()
+  // Default the filter to the matched menu's py-file basename, scoped strictly
+  // to py_file_path. User can edit/clear to broaden.
+  const firstMatched = (matchedItems || []).find(m => (m.py_file_path || "").trim());
+  $("menu_filter").value = firstMatched
+    ? String(firstMatched.py_file_path).split("/").pop()
     : "";
   applyMenuFilter();
 }
@@ -405,66 +403,7 @@ function applyMenuFilter() {
 
 $("menu_filter").addEventListener("input", applyMenuFilter);
 $("menu_filter_clear").onclick = () => {
-  $("menu_filter").value = ""; applyMenuFilter();
-};
-
-function applyMenuSearchPrefill() {
-  if (!lastJob) return;
-  const sourceEl = document.querySelector('input[name="source"]:checked');
-  const side = sourceEl ? sourceEl.value : "from";
-  const cid = lastJob[`deploy_${side}_cid`] || "";
-  const segids = lastJob[`deploy_${side}_segids`] || [];
-  const box = lastJob[`deploy_${side}_box`] || lastJob.box_id || "";
-  $("menu_search_cid").value = cid;
-  $("menu_search_segid").value = Array.isArray(segids) ? segids.join(",") : (segids || "");
-  $("menu_search_box").value = box;
-}
-
-document.querySelectorAll('input[name="source"]').forEach(el =>
-  el.addEventListener("change", () => { applyMenuSearchPrefill(); applyMenuFilter(); })
-);
-
-$("menu_search_btn").onclick = async () => {
-  const btn = $("menu_search_btn");
-  const cid = $("menu_search_cid").value.trim();
-  const segidRaw = $("menu_search_segid").value.trim();
-  const box = $("menu_search_box").value.trim();
-  const segids = segidRaw.split(/[\s,]+/).filter(Boolean);
-  if (!cid || !segids.length || !box) {
-    $("menu_search_status").textContent = "Cid, Segid and Box are all required.";
-    $("menu_search_status").className = "status err";
-    return;
-  }
-  btn.disabled = true;
-  $("menu_search_status").textContent = "Searching menu list…";
-  $("menu_search_status").className = "status";
-  const fmt = ($("menu_list_format")?.value || "new");
-  const sourceEl = document.querySelector('input[name="source"]:checked');
-  const side = sourceEl ? sourceEl.value : "from";
-  const menuName = lastJob ? (lastJob[`deploy_${side}_menu`] || lastJob.menu_name || "") : "";
-  try {
-    const { r, data } = await fetchJson("/api/menu_search", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        cid, segids, box_id: box,
-        menu_name: menuName,
-        menu_list_format: fmt,
-      }),
-    });
-    if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
-    const rows = (data.rows || []).map(x => ({ ...x, side }));
-    _menuRowsBySide[side] = rows;
-    if (lastJob) lastJob[`menu_list_${side}`] = rows;
-    applyMenuFilter();
-    $("menu_search_status").textContent = `Returned ${rows.length} row(s).`;
-    $("menu_search_status").className = "status ok";
-  } catch (e) {
-    $("menu_search_status").textContent = "Error: " + e.message;
-    $("menu_search_status").className = "status err";
-  } finally {
-    btn.disabled = false;
-  }
+  $("menu_filter").value = ""; $("only_matched").checked = false; applyMenuFilter();
 };
 
 function useMenuRow(it) {
@@ -567,12 +506,14 @@ $("fetch_btn").onclick = async () => {
     const { r, data } = await fetchJson("/api/job", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ job_number: job, menu_list_format: fmt }),
+      body: JSON.stringify({ job_number: job }),
     });
-    if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
-    lastJob = data;
-    renderSummary(data);
-    renderMenuList(data);
+    const result = await readApiResponse(r);
+    if (!result.ok) throw new Error(getApiErrorMessage(result, "fetch failed"));
+    if (!result.data) throw new Error("Server returned non-JSON success response.");
+    lastJob = result.data;
+    renderSummary(result.data);
+    renderMenuList(result.data.menu_list_all || [], result.data.menu_list || []);
     prefillForms();
     $("fetch_status").textContent = "Loaded."; $("fetch_status").className = "status ok";
   } catch (e) {
@@ -596,10 +537,13 @@ async function submitMenuForm(formId, endpoint, statusEl, outEl, label) {
   $(outEl).textContent = "";
   showLoader(label, "Uploading files and posting to the manualmapping API.");
   try {
-    const { r, data } = await fetchJson(endpoint, { method: "POST", body: fd });
-    $(outEl).textContent = JSON.stringify(data, null, 2);
-    $(statusEl).textContent = r.ok ? "Done." : "Error";
-    $(statusEl).className = r.ok ? "status ok" : "status err";
+    const r = await fetch(endpoint, { method: "POST", body: fd });
+    const result = await readApiResponse(r);
+    $(outEl).textContent = result.data
+      ? JSON.stringify(result.data, null, 2)
+      : (result.raw || "");
+    $(statusEl).textContent = result.ok ? "Done." : ("Error: " + getApiErrorMessage(result, "request failed"));
+    $(statusEl).className = result.ok ? "status ok" : "status err";
   } catch (e) {
     $(statusEl).textContent = "Error: " + e.message; $(statusEl).className = "status err";
   } finally {
@@ -619,7 +563,11 @@ async function deleteIds(ids) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ids }),
     });
-    $("delete_output").textContent = JSON.stringify(data, null, 2);
+    const result = await readApiResponse(r);
+    $("delete_output").textContent = result.data
+      ? JSON.stringify(result.data, null, 2)
+      : (result.raw || "");
+    if (!result.ok) $("delete_output").textContent = "Error: " + getApiErrorMessage(result, "delete failed");
   } catch (e) {
     $("delete_output").textContent = "Error: " + e.message;
   } finally {
@@ -679,10 +627,10 @@ async function searchAndClone(kind, pathFieldName) {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ term, kind }),
     });
-    data = res.data;
-    if (!res.r.ok) { alert("Search error: " + (data.error || res.r.status)); return; }
-  } catch (e) { alert("Search error: " + e.message); return; }
-  finally { hideLoader(); }
+    const result = await readApiResponse(r);
+    if (!result.ok) { alert("Search error: " + getApiErrorMessage(result, String(result.status))); return; }
+    data = result.data || { matches: [] };
+  } finally { hideLoader(); }
   if (!data.matches.length) { alert(`No files matching '${data.pattern}'`); return; }
 
   const picked = await showSearchModal(`Select file (${data.matches.length} matches)`, data.matches);
@@ -702,10 +650,10 @@ async function searchAndClone(kind, pathFieldName) {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ src: picked.path, new_name, domain_alias: domain }),
     });
-    cd = cres.data;
-    if (!cres.r.ok) { alert("Clone error: " + (cd.error || cres.r.status)); return; }
-  } catch (e) { alert("Clone error: " + e.message); return; }
-  finally { hideLoader(); }
+    const result = await readApiResponse(cr);
+    cd = result.data || {};
+    if (!result.ok) { alert("Clone error: " + getApiErrorMessage(result, String(result.status))); return; }
+  } finally { hideLoader(); }
 
   $("add_form").elements[pathFieldName].value = cd.clone_path;
   $("edit_form").elements[pathFieldName].value = cd.clone_path;
@@ -733,20 +681,21 @@ $("create_py_btn").onclick = async () => {
         overwrite,
       }),
     });
-    return [r, data];
+    const result = await readApiResponse(r);
+    return [r, result];
   }
   showLoader("Creating py file…", `Copying source into the ${domain} domain folder.`);
   let r, data;
   try {
-    [r, data] = await send(false);
-  } catch (e) { alert("Create error: " + e.message); return; }
-  finally { hideLoader(); }
+    [r, result] = await send(false);
+  } finally { hideLoader(); }
+  const data = result.data || {};
   if (r.status === 409 && data.needs_overwrite) {
     if (!confirm(`File exists:\n${data.dest}\n\nOverwrite?`)) return;
     showLoader("Overwriting py file…", "");
-    try { [r, data] = await send(true); }
-    catch (e) { alert("Create error: " + e.message); return; }
-    finally { hideLoader(); }
+    try {
+      [r, result] = await send(true);
+    } finally { hideLoader(); }
   }
   if (!r.ok) { alert("Create error: " + (data.error || r.status)); return; }
   $("add_form").elements["py_file_path"].value = data.dest;
