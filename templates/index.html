@@ -295,6 +295,11 @@ let lastJob = null;
 
 const $ = (id) => document.getElementById(id);
 
+async function fetchJson(url, options) {
+  const r = await fetch(url, options);
+  return { r };
+}
+
 async function readApiResponse(response) {
   const raw = await response.text();
   let data = null;
@@ -348,7 +353,7 @@ function renderMenuList(data) {
   $("menu_list_panel").style.display = "block";
   // Default the filter to the matched menu's py-file basename, scoped strictly
   // to py_file_path. User can edit/clear to broaden.
-  const firstMatched = (matchedItems || []).find(m => (m.py_file_path || "").trim());
+  const firstMatched = [...fromRows, ...toRows].find(m => (m.py_file_path || "").trim());
   $("menu_filter").value = firstMatched
     ? String(firstMatched.py_file_path).split("/").pop()
     : "";
@@ -403,7 +408,7 @@ function applyMenuFilter() {
 
 $("menu_filter").addEventListener("input", applyMenuFilter);
 $("menu_filter_clear").onclick = () => {
-  $("menu_filter").value = ""; $("only_matched").checked = false; applyMenuFilter();
+  $("menu_filter").value = ""; applyMenuFilter();
 };
 
 function useMenuRow(it) {
@@ -506,14 +511,14 @@ $("fetch_btn").onclick = async () => {
     const { r, data } = await fetchJson("/api/job", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ job_number: job }),
+      body: JSON.stringify({ job_number: job, menu_list_format: fmt }),
     });
     const result = await readApiResponse(r);
     if (!result.ok) throw new Error(getApiErrorMessage(result, "fetch failed"));
     if (!result.data) throw new Error("Server returned non-JSON success response.");
     lastJob = result.data;
     renderSummary(result.data);
-    renderMenuList(result.data.menu_list_all || [], result.data.menu_list || []);
+    renderMenuList(result.data);
     prefillForms();
     $("fetch_status").textContent = "Loaded."; $("fetch_status").className = "status ok";
   } catch (e) {
@@ -558,7 +563,7 @@ async function deleteIds(ids) {
   $("delete_output").textContent = "Deleting…";
   showLoader(`Deleting ${ids.length} menu${ids.length > 1 ? "s" : ""}…`, "Calling DeleteMenu on the manualmapping API.");
   try {
-    const { data } = await fetchJson("/api/delete_menu", {
+    const { r } = await fetchJson("/api/delete_menu", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ids }),
@@ -623,7 +628,7 @@ async function searchAndClone(kind, pathFieldName) {
   showLoader(`Searching ${kind} files…`, "Walking the Realbooks folder for matches.");
   let data;
   try {
-    const res = await fetchJson("/api/search", {
+    const { r } = await fetchJson("/api/search", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ term, kind }),
     });
@@ -646,11 +651,11 @@ async function searchAndClone(kind, pathFieldName) {
   showLoader("Cloning file…", `Copying into the ${domain} domain folder.`);
   let cd;
   try {
-    const cres = await fetchJson("/api/clone", {
+    const { r } = await fetchJson("/api/clone", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ src: picked.path, new_name, domain_alias: domain }),
     });
-    const result = await readApiResponse(cr);
+    const result = await readApiResponse(r);
     cd = result.data || {};
     if (!result.ok) { alert("Clone error: " + getApiErrorMessage(result, String(result.status))); return; }
   } finally { hideLoader(); }
@@ -672,7 +677,7 @@ $("create_py_btn").onclick = async () => {
   if (!title) { alert("Missing job title."); return; }
 
   async function send(overwrite) {
-    const { r, data } = await fetchJson("/api/create_py", {
+    const { r } = await fetchJson("/api/create_py", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         job, title, domain_alias: domain,
@@ -685,17 +690,18 @@ $("create_py_btn").onclick = async () => {
     return [r, result];
   }
   showLoader("Creating py file…", `Copying source into the ${domain} domain folder.`);
-  let r, data;
+  let r, result;
   try {
     [r, result] = await send(false);
   } finally { hideLoader(); }
-  const data = result.data || {};
+  let data = result.data || {};
   if (r.status === 409 && data.needs_overwrite) {
     if (!confirm(`File exists:\n${data.dest}\n\nOverwrite?`)) return;
     showLoader("Overwriting py file…", "");
     try {
       [r, result] = await send(true);
     } finally { hideLoader(); }
+    data = result.data || {};
   }
   if (!r.ok) { alert("Create error: " + (data.error || r.status)); return; }
   $("add_form").elements["py_file_path"].value = data.dest;
